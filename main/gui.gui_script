@@ -560,7 +560,7 @@ local function show_play(self, data)
   self.end_timer = 0
   self.ai_timer = 1.0
   self.paused = false
-  self.user_paused = false -- a fresh game clears any stale pause state (quit-to-title left it true; gd_resume would otherwise re-pause the game after the next ad)
+  self.user_paused = false -- a fresh game clears any stale pause state (quit-to-title left it true; ad_resume would otherwise re-pause the game after the next ad)
   self.seasoning = 0
   self.season_total = 0
   self.grill = grill.new(data.def, self.endless)
@@ -599,6 +599,7 @@ local function show_play(self, data)
   gui.animate(bb, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
     gui.EASING_OUTBACK, 0.25)
   otext(self, bb, "MISSION: " .. self.mission.text, 0, 0, 1.2, C.ink, 560)
+  self.banner_node = bb
   self.banner_timer = 1.6
   self.banner_active = true
 end
@@ -950,8 +951,16 @@ function update(self, dt)
     if self.banner_timer <= 0 then
       self.banner_active = false
       self.banner_timer = nil
-      if self.screen == "play" and not self.paused then
-        clear_overlay(self)
+      -- Delete the banner node directly, paused or not: the old code
+      -- called clear_overlay only when not paused, so a pre-roll ad
+      -- firing in the first 1.6s left the banner covering the grill
+      -- for the whole level (same latent bug as Tile Garden / Jewel
+      -- Grove / Turbo / Ember & Frost). Deleting the node also removes
+      -- its parented text; a later clear_overlay re-deletes it under
+      -- pcall, so the stale onodes entry is harmless.
+      if self.banner_node then
+        pcall(gui.delete_node, self.banner_node)
+        self.banner_node = nil
       end
     end
   end
@@ -1100,9 +1109,9 @@ function on_message(self, message_id, message, sender)
     self.user_paused = false
     self.paused = false
     clear_overlay(self)
-  elseif message_id == hash("gd_pause") then
+  elseif message_id == hash("ad_pause") then
     self.paused = true
-  elseif message_id == hash("gd_resume") then
+  elseif message_id == hash("ad_resume") then
     self.paused = self.user_paused or false
   elseif message_id == hash("set_mute") then
     self.muted = message.muted
