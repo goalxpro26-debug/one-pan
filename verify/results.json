@@ -1,0 +1,102 @@
+[
+  {
+    "name": "page loads, title state reported",
+    "ok": true,
+    "detail": "{\"screen\":\"title\",\"score\":\"0\",\"served\":\"0\",\"perfect\":\"0\",\"lost\":\"0\",\"time\":\"0\",\"pan\":\"100\",\"foods\":\"0\",\"perfect_n\":\"0\",\"good_n\":\"0\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"0,0\",\"early\":\"0,0\",\"burnt\":\"0,0\",\"level\":\"0\",\"endless\":\"0\",\"auto\":\"0\",\"paused\":\"0\",\"streak\":\"0\",\"season\":\"0\",\"customers\":\"0\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "canvas non-blank (title screenshot, distinct colors)",
+    "ok": true,
+    "detail": "distinct=501"
+  },
+  {
+    "name": "level 1 grill populated (foods > 0)",
+    "ok": true,
+    "detail": "foods=1"
+  },
+  {
+    "name": "level 1 timer running",
+    "ok": true,
+    "detail": "time=117"
+  },
+  {
+    "name": "level 1 customers queued",
+    "ok": true,
+    "detail": "customers=1"
+  },
+  {
+    "name": "level 1 pan full (100)",
+    "ok": true,
+    "detail": "pan=100"
+  },
+  {
+    "name": "early tap rejected (food wasted, served + score unchanged)",
+    "ok": true,
+    "detail": "last state: {\"screen\":\"play\",\"score\":\"0\",\"served\":\"0\",\"perfect\":\"0\",\"lost\":\"0\",\"time\":\"115\",\"pan\":\"100\",\"foods\":\"0\",\"perfect_n\":\"0\",\"good_n\":\"0\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"0,0\",\"early\":\"0,0\",\"burnt\":\"0,0\",\"level\":\"1\",\"endless\":\"0\",\"auto\":\"0\",\"paused\":\"0\",\"streak\":\"0\",\"season\":\"0\",\"customers\":\"1\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "perfect serve scores (served +1, score +100 or more)",
+    "ok": true,
+    "detail": "served 0 -> 1, score 0 -> 100"
+  },
+  {
+    "name": "pan wears down with served dishes (pan < 100)",
+    "ok": true,
+    "detail": "pan=94"
+  },
+  {
+    "name": "seasoning restores the pan (pan 100, season flag clears)",
+    "ok": true,
+    "detail": "pan=100 season=0"
+  },
+  {
+    "name": "pause key pauses",
+    "ok": true,
+    "detail": "{\"screen\":\"play\",\"score\":\"100\",\"served\":\"1\",\"perfect\":\"1\",\"lost\":\"0\",\"time\":\"106\",\"pan\":\"100\",\"foods\":\"2\",\"perfect_n\":\"0\",\"good_n\":\"0\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"0,0\",\"early\":\"370,400\",\"burnt\":\"0,0\",\"level\":\"1\",\"endless\":\"0\",\"auto\":\"0\",\"paused\":\"1\",\"streak\":\"1\",\"season\":\"0\",\"customers\":\"2\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "pause key resumes",
+    "ok": true,
+    "detail": "{\"screen\":\"play\",\"score\":\"100\",\"served\":\"1\",\"perfect\":\"1\",\"lost\":\"0\",\"time\":\"106\",\"pan\":\"100\",\"foods\":\"2\",\"perfect_n\":\"0\",\"good_n\":\"1\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"370,400\",\"early\":\"502,400\",\"burnt\":\"0,0\",\"level\":\"1\",\"endless\":\"0\",\"auto\":\"0\",\"paused\":\"0\",\"streak\":\"1\",\"season\":\"0\",\"customers\":\"2\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "autoplay turns on",
+    "ok": true,
+    "detail": "{\"screen\":\"play\",\"score\":\"100\",\"served\":\"1\",\"perfect\":\"1\",\"lost\":\"0\",\"time\":\"106\",\"pan\":\"100\",\"foods\":\"2\",\"perfect_n\":\"0\",\"good_n\":\"1\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"370,400\",\"early\":\"502,400\",\"burnt\":\"0,0\",\"level\":\"1\",\"endless\":\"0\",\"auto\":\"1\",\"paused\":\"0\",\"streak\":\"1\",\"season\":\"0\",\"customers\":\"2\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "level 1 won by autoplay",
+    "ok": true,
+    "detail": "score=1015 served=6"
+  },
+  {
+    "name": "score increased during play",
+    "ok": true,
+    "detail": "score=1015"
+  },
+  {
+    "name": "level 2 grill populated (foods > 0)",
+    "ok": true,
+    "detail": "foods=1"
+  },
+  {
+    "name": "pause in endless works",
+    "ok": true,
+    "detail": "{\"screen\":\"play\",\"score\":\"0\",\"served\":\"0\",\"perfect\":\"0\",\"lost\":\"0\",\"time\":\"0\",\"pan\":\"100\",\"foods\":\"0\",\"perfect_n\":\"0\",\"good_n\":\"0\",\"burnt_n\":\"0\",\"serve\":\"0,0\",\"good\":\"0,0\",\"early\":\"0,0\",\"burnt\":\"0,0\",\"level\":\"1\",\"endless\":\"1\",\"auto\":\"1\",\"paused\":\"1\",\"streak\":\"0\",\"season\":\"0\",\"customers\":\"0\",\"rival\":\"0\"}"
+  },
+  {
+    "name": "endless mode scores",
+    "ok": true,
+    "detail": "score 0 -> 120"
+  },
+  {
+    "name": "mute toggle clickable (no crash)",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "name": "no page/console errors (excluding GD SDK network noise)",
+    "ok": true,
+    "detail": ""
+  }
+]

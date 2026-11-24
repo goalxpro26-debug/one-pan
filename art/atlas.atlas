@@ -1,0 +1,45 @@
+images {
+  image: "/art/background.png"
+}
+images {
+  image: "/art/food_sausage.png"
+}
+images {
+  image: "/art/food_steak.png"
+}
+images {
+  image: "/art/food_corn.png"
+}
+images {
+  image: "/art/food_fish.png"
+}
+images {
+  image: "/art/food_patty.png"
+}
+images {
+  image: "/art/pan.png"
+}
+images {
+  image: "/art/cust_1.png"
+}
+images {
+  image: "/art/cust_2.png"
+}
+images {
+  image: "/art/cust_3.png"
+}
+images {
+  image: "/art/cust_4.png"
+}
+images {
+  image: "/art/particle.png"
+}
+images {
+  image: "/art/star.png"
+}
+images {
+  image: "/art/lock.png"
+}
+margin: 0
+extrude_borders: 2
+inner_padding: 0

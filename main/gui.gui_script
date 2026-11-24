@@ -1,0 +1,1142 @@
+-- One Pan: view layer. Owns every screen, the grill, the customers, input
+-- (mouse + touch + keyboard), animations, and mission tracking.
+-- The controller (game#game) owns save data, level flow, ads and music.
+local audio = require("main.audio")
+local grill = require("main.grill")
+local levels = require("main.levels")
+
+local W, H = 1136, 640
+local GAME = "game#game"
+local do_season
+local serve_slot
+
+local SLOT_Y = 400
+local SLOT_SP = 132
+local SLOT_SIZE = 104
+local FOOD_SIZE = 96
+local BAR_Y = 330
+local LABEL_Y = 306
+local PAN_X = 95
+local CUST_Y = 120
+
+local C = {
+  white   = vmath.vector4(1, 1, 1, 1),
+  ink     = vmath.vector4(0.20, 0.14, 0.10, 1),
+  panel   = vmath.vector4(0.99, 0.94, 0.84, 1),
+  btn     = vmath.vector4(0.85, 0.32, 0.22, 1),
+  btn2    = vmath.vector4(0.95, 0.65, 0.20, 1),
+  btn_dim = vmath.vector4(0.55, 0.55, 0.55, 1),
+  dim     = vmath.vector4(0, 0, 0, 0.55),
+  danger  = vmath.vector4(0.9, 0.25, 0.25, 1),
+  gold    = vmath.vector4(1, 0.8, 0.25, 1),
+  green   = vmath.vector4(0.30, 0.75, 0.35, 1),
+  orange  = vmath.vector4(0.95, 0.55, 0.15, 1),
+  grill   = vmath.vector4(0.16, 0.16, 0.18, 1),
+  grill2  = vmath.vector4(0.24, 0.24, 0.27, 1),
+  raw     = vmath.vector4(0.98, 0.78, 0.72, 1),
+  sel     = vmath.vector4(1, 0.82, 0.35, 1),
+  clear   = vmath.vector4(1, 1, 1, 0),
+}
+
+local CUST_COLOR = {
+  vmath.vector4(0.25, 0.65, 0.75, 1),
+  vmath.vector4(0.95, 0.45, 0.45, 1),
+  vmath.vector4(0.95, 0.75, 0.25, 1),
+  vmath.vector4(0.65, 0.5, 0.85, 1),
+}
+
+-- ------------------------------------------------------------ node helpers --
+
+local function track(self, node, overlay)
+  if overlay then self.onodes[#self.onodes + 1] = node
+  else self.nodes[#self.nodes + 1] = node end
+  return node
+end
+
+local function new_box(self, overlay, parent, x, y, w, h, color)
+  local n = gui.new_box_node(vmath.vector3(x, y, 0), vmath.vector3(w, h, 0))
+  gui.set_pivot(n, gui.PIVOT_CENTER)
+  gui.set_color(n, color or C.white)
+  if parent then gui.set_parent(n, parent) else track(self, n, overlay) end
+  return n
+end
+
+local function new_img(self, overlay, parent, image, x, y, w, h)
+  local n = new_box(self, overlay, parent, x, y, w, h, C.white)
+  gui.set_texture(n, "atlas")
+  gui.play_flipbook(n, hash(image))
+  return n
+end
+
+local function new_text(self, overlay, parent, str, x, y, scale, color, wrap_w)
+  local n = gui.new_text_node(vmath.vector3(x, y, 0), str or "")
+  gui.set_font(n, "default")
+  gui.set_pivot(n, gui.PIVOT_CENTER)
+  gui.set_scale(n, vmath.vector3(scale or 1, scale or 1, 1))
+  gui.set_color(n, color or C.white)
+  if wrap_w then
+    gui.set_line_break(n, true)
+    gui.set_size(n, vmath.vector3(wrap_w, 4000, 0))
+  end
+  if parent then gui.set_parent(n, parent) else track(self, n, overlay) end
+  return n
+end
+
+local function pick(self, node, cb, overlay)
+  self.pick[#self.pick + 1] = { node = node, cb = cb, overlay = overlay }
+end
+
+local function button(self, overlay, parent, label, x, y, w, h, scale, cb, color)
+  local b = new_box(self, overlay, parent, x, y, w, h, color or C.btn)
+  local t = new_text(self, overlay, b, label, 0, 0, scale or 1.1, C.white)
+  pick(self, b, function()
+    audio.play("sfx_click")
+    gui.animate(b, gui.PROP_SCALE, vmath.vector3(0.92, 0.92, 1),
+      gui.EASING_OUT, 0.06, 0, function()
+        gui.animate(b, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+          gui.EASING_OUTBACK, 0.12)
+      end)
+    cb()
+  end, overlay)
+  return b, t
+end
+
+local function obox(self, parent, x, y, w, h, color)
+  return new_box(self, true, parent, x, y, w, h, color)
+end
+
+local function otext(self, parent, str, x, y, scale, color, wrap_w)
+  return new_text(self, true, parent, str, x, y, scale, color, wrap_w)
+end
+
+local function oimg(self, parent, image, x, y, w, h)
+  return new_img(self, true, parent, image, x, y, w, h)
+end
+
+local function clear_all(self)
+  for _, n in ipairs(self.nodes) do pcall(gui.delete_node, n) end
+  for _, n in ipairs(self.onodes) do pcall(gui.delete_node, n) end
+  self.nodes, self.onodes, self.pick = {}, {}, {}
+  self.slot_nodes = {}
+  self.cust_nodes = {}
+  self.particles = {}
+  self.popups = {}
+  self.leaving = {}
+  self.gen = (self.gen or 0) + 1
+end
+
+local function clear_overlay(self)
+  for _, n in ipairs(self.onodes) do pcall(gui.delete_node, n) end
+  self.onodes = {}
+  local keep = {}
+  for _, p in ipairs(self.pick) do
+    if not p.overlay then keep[#keep + 1] = p end
+  end
+  self.pick = keep
+  self.gen = (self.gen or 0) + 1
+end
+
+local function bg(self)
+  new_img(self, false, nil, "background", W / 2, H / 2, W, H)
+end
+
+local function panel(self, w, h)
+  obox(self, nil, 0, 0, W, H, C.dim)
+  local p = obox(self, nil, W / 2, H / 2, w, h, C.panel)
+  gui.set_scale(p, vmath.vector3(0.9, 0.9, 1))
+  gui.animate(p, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+    gui.EASING_OUTBACK, 0.25)
+  return p
+end
+
+-- ------------------------------------------------------------------ HUD --
+
+local function fmt_time(s)
+  s = math.max(0, math.ceil(s or 0))
+  return string.format("%d:%02d", math.floor(s / 60), s % 60)
+end
+
+local function mission_progress(self)
+  local m = self.mission
+  if not m then return "" end
+  local g = self.grill
+  if m.type == "serve" then
+    return "Served: " .. g.served .. " / " .. m.count
+  elseif m.type == "score" then
+    return "Score: " .. self.score .. " / " .. m.target
+  elseif m.type == "perfect" then
+    return "Perfect: " .. g.perfect .. " / " .. m.count ..
+      "   Lost: " .. g.lost .. " / " .. m.max_lost
+  elseif m.type == "endless" then
+    return "Walk-offs: " .. g.lost .. " / 3   Best: " .. (self.endless_best or 0)
+  end
+  return ""
+end
+
+local function update_hud(self)
+  if self.hud_score then
+    gui.set_text(self.hud_score, "Score  " .. self.score)
+  end
+  if self.hud_timer then
+    if self.endless then
+      gui.set_text(self.hud_timer, fmt_time(self.elapsed))
+      gui.set_color(self.hud_timer, C.white)
+    else
+      gui.set_text(self.hud_timer, fmt_time(self.time_left))
+      if self.time_left and self.time_left < 30 then
+        gui.set_color(self.hud_timer, C.danger)
+      else
+        gui.set_color(self.hud_timer, C.white)
+      end
+    end
+  end
+  if self.hud_mission then
+    gui.set_text(self.hud_mission, mission_progress(self))
+  end
+  if self.hud_rival then
+    gui.set_text(self.hud_rival, "RIVAL: " .. (self.grill and self.grill.rival or 0))
+  end
+  -- pan bar fill: anchored at the bottom of the bar
+  if self.pan_fill and self.grill then
+    local frac = math.max(0, math.min(1, self.grill.pan / 100))
+    local h = 200 * frac
+    gui.set_size(self.pan_fill, vmath.vector3(44, math.max(h, 2), 0))
+    gui.set_position(self.pan_fill, vmath.vector3(PAN_X, 320 + h / 2, 0))
+    if frac > 0.5 then gui.set_color(self.pan_fill, C.green)
+    elseif frac > 0.25 then gui.set_color(self.pan_fill, C.orange)
+    else gui.set_color(self.pan_fill, C.danger) end
+  end
+  if self.season_btn and self.grill then
+    local seasoning = self.seasoning and self.seasoning > 0
+    if seasoning then
+      gui.set_text(self.season_label, "SEASONING...")
+      gui.set_color(self.season_btn, C.btn_dim)
+    elseif self.grill.pan >= 100 then
+      gui.set_text(self.season_label, "PAN PERFECT")
+      gui.set_color(self.season_btn, C.btn_dim)
+    else
+      gui.set_text(self.season_label, "SEASON PAN")
+      gui.set_color(self.season_btn, C.btn2)
+    end
+  end
+  if self.season_fill then
+    if self.seasoning and self.seasoning > 0 and self.season_total > 0 then
+      local frac = 1 - self.seasoning / self.season_total
+      gui.set_size(self.season_fill, vmath.vector3(150 * frac, 10, 0))
+      gui.set_position(self.season_fill,
+        vmath.vector3(PAN_X - 75 + 75 * frac, 200, 0))
+      gui.set_color(self.season_fill, C.gold)
+    else
+      gui.set_size(self.season_fill, vmath.vector3(0, 10, 0))
+    end
+  end
+end
+
+local function popup(self, x, y, str, color)
+  local n = new_text(self, false, nil, str, x, y, 1.1, color or C.gold)
+  gui.set_scale(n, vmath.vector3(0.6, 0.6, 1))
+  gui.animate(n, gui.PROP_SCALE, vmath.vector3(1.15, 1.15, 1),
+    gui.EASING_OUTBACK, 0.18)
+  self.popups[#self.popups + 1] = { node = n, life = 0.9 }
+end
+
+local function burst(self, x, y, color, n)
+  for i = 1, n or 6 do
+    local a = math.random() * math.pi * 2
+    local sp = 120 + math.random() * 260
+    local node = new_img(self, false, nil, "particle", x, y, 18, 18)
+    gui.set_color(node, color or C.white)
+    self.particles[#self.particles + 1] = {
+      node = node, vx = math.cos(a) * sp, vy = math.sin(a) * sp, life = 0.55,
+    }
+  end
+end
+
+local function smoke(self, x, y)
+  for i = 1, 8 do
+    local node = new_img(self, false, nil, "particle",
+      x + (math.random() - 0.5) * 40, y + (math.random() - 0.5) * 20, 26, 26)
+    gui.set_color(node, vmath.vector4(0.35, 0.35, 0.35, 0.8))
+    self.particles[#self.particles + 1] = {
+      node = node, vx = (math.random() - 0.5) * 40,
+      vy = 60 + math.random() * 60, life = 0.9, smoke = true,
+    }
+  end
+end
+
+local function confetti(self)
+  for i = 1, 46 do
+    local ci = math.random(4)
+    local node = new_img(self, false, nil, "particle",
+      math.random(40, W - 40), H + 20, 20, 20)
+    gui.set_color(node, CUST_COLOR[ci])
+    self.particles[#self.particles + 1] = {
+      node = node, vx = (math.random() - 0.5) * 120,
+      vy = -(140 + math.random() * 160), life = 1.6, confetti = true,
+    }
+  end
+end
+
+-- ---------------------------------------------------------------- screens --
+
+local function show_title(self, data)
+  self.screen = "title"
+  self.paused = false
+  self.user_paused = false
+  clear_all(self)
+  bg(self)
+  new_img(self, false, nil, "pan", 150, 520, 130, 130)
+  new_img(self, false, nil, "food_steak", 986, 520, 96, 96)
+  new_img(self, false, nil, "food_sausage", 110, 400, 84, 84)
+  new_img(self, false, nil, "food_corn", 1026, 400, 84, 84)
+  new_text(self, false, nil, "One", 568, 514, 3.2, C.ink)
+  new_text(self, false, nil, "PAN", 568, 440, 2.2, C.btn)
+  new_text(self, false, nil, "One grill. One pan. Pull it at the perfect moment.",
+    568, 392, 0.95, C.ink)
+  local play = button(self, false, nil, "PLAY", 568, 312, 320, 80, 1.6,
+    function() msg.post(GAME, "ui_play", {}) end, C.btn)
+  gui.animate(play, gui.PROP_SCALE, vmath.vector3(1.06, 1.06, 1),
+    gui.EASING_INOUTSINE, 0.7, 0, nil, gui.PLAYBACK_LOOP_PINGPONG)
+  button(self, false, nil, "LEVELS", 400, 210, 260, 64, 1.2,
+    function() msg.post(GAME, "ui_levels", {}) end, C.btn2)
+  button(self, false, nil, "ENDLESS", 736, 210, 260, 64, 1.2,
+    function() msg.post(GAME, "ui_endless", {}) end, C.btn2)
+  button(self, false, nil, "HOW TO PLAY", 568, 130, 320, 64, 1.2,
+    function() msg.post(GAME, "ui_howto", {}) end)
+  if data.endless_best and data.endless_best > 0 then
+    new_text(self, false, nil, "Endless best: " .. data.endless_best,
+      568, 76, 1.0, C.ink)
+  end
+  new_text(self, false, nil, "An original game by ORQA",
+    568, 36, 0.8, C.ink)
+  self.mute_btn, self.mute_label = button(self, false, nil,
+    (self.muted and "SOUND OFF" or "SOUND ON"), 1030, 600, 150, 48, 0.85,
+    function() msg.post(GAME, "ui_mute", {}) end)
+end
+
+local function show_levels(self, data)
+  self.screen = "levels"
+  clear_all(self)
+  bg(self)
+  new_text(self, false, nil, "Pick a Level", 568, 590, 2.0, C.ink)
+  local unlocked = data.unlocked or 1
+  for i = 1, #levels.LEVELS do
+    local col = (i - 1) % 4
+    local row = math.floor((i - 1) / 4)
+    local x = 218 + col * 240
+    local y = 460 - row * 150
+    local locked = i > unlocked
+    local b = new_box(self, false, nil, x, y, 150, 120,
+      locked and C.btn_dim or C.btn)
+    new_text(self, false, b, tostring(i), 0, 16, 1.8, C.white)
+    if locked then
+      new_img(self, false, b, "lock", 0, -34, 36, 45)
+    else
+      local stars = (data.stars and data.stars[i]) or 0
+      for s = 1, 3 do
+        local st = new_img(self, false, b, "star",
+          (s - 2) * 34, -38, 30, 30)
+        if s > stars then
+          gui.set_color(st, vmath.vector4(0.6, 0.6, 0.6, 0.7))
+        end
+      end
+      pick(self, b, function()
+        audio.play("sfx_click")
+        msg.post(GAME, "ui_pick_level", { level = i })
+      end)
+    end
+  end
+  button(self, false, nil, "BACK", 568, 70, 220, 64, 1.2,
+    function() msg.post(GAME, "ui_quit", {}) end)
+end
+
+-- ------------------------------------------------------------------- grill --
+
+local function slot_x(self, i)
+  local n = #self.grill.slots
+  return W / 2 + (i - (n + 1) / 2) * SLOT_SP
+end
+
+local function build_slot_nodes(self)
+  self.slot_nodes = {}
+  for i = 1, #self.grill.slots do
+    local x = slot_x(self, i)
+    local frame = new_box(self, false, nil, x, SLOT_Y,
+      SLOT_SIZE + 8, SLOT_SIZE + 8, C.grill)
+    new_box(self, false, frame, 0, 0, SLOT_SIZE, SLOT_SIZE, C.grill2)
+    local img = new_img(self, false, nil, "food_sausage",
+      x, SLOT_Y, FOOD_SIZE, FOOD_SIZE)
+    gui.set_color(img, C.clear)
+    local bar_bg = new_box(self, false, nil, x, BAR_Y, SLOT_SIZE, 12,
+      vmath.vector4(0, 0, 0, 0.6))
+    local band = new_box(self, false, nil, x, BAR_Y, 10, 12, C.green)
+    gui.set_color(band, C.clear)
+    local fill = new_box(self, false, nil, x, BAR_Y, 0, 12, C.raw)
+    local label = new_text(self, false, nil, "", x, LABEL_Y, 0.75, C.ink)
+    local hot = new_text(self, false, nil, "HOT!", x, SLOT_Y + 62, 0.9, C.orange)
+    gui.set_color(hot, C.clear)
+    self.slot_nodes[i] = {
+      frame = frame, img = img, bar_bg = bar_bg, band = band,
+      fill = fill, label = label, hot = hot, food = nil, x = x,
+    }
+    pick(self, img, function() serve_slot(self, i) end)
+  end
+end
+
+local function sync_slots(self)
+  local g = self.grill
+  if not g then return end
+  for i, sn in ipairs(self.slot_nodes) do
+    local slot = g.slots[i]
+    if not slot then break end
+    if slot.food ~= sn.food then
+      sn.food = slot.food
+      if slot.food then
+        local f = levels.FOODS[slot.food]
+        gui.play_flipbook(sn.img, hash("food_" .. f.id))
+        gui.set_color(sn.img, C.white)
+        gui.set_scale(sn.img, vmath.vector3(0.2, 0.2, 1))
+        gui.animate(sn.img, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+          gui.EASING_OUTBACK, 0.22)
+        gui.set_text(sn.label, f.name)
+        -- green perfect band on the doneness bar
+        local bw = SLOT_SIZE
+        local bx = sn.x - bw / 2 + (f.perfect0 / f.burn) * bw
+        local band_w = (f.perfect1 - f.perfect0) / f.burn * bw
+        gui.set_size(sn.band, vmath.vector3(math.max(band_w, 4), 12, 0))
+        gui.set_position(sn.band,
+          vmath.vector3(bx + band_w / 2, BAR_Y, 0))
+        gui.set_color(sn.band, vmath.vector4(0.3, 0.75, 0.35, 0.9))
+        audio.play("sfx_sizzle")
+      else
+        gui.set_color(sn.img, C.clear)
+        gui.set_text(sn.label, "")
+        gui.set_color(sn.band, C.clear)
+        gui.set_size(sn.fill, vmath.vector3(0, 12, 0))
+      end
+    end
+    if slot.food then
+      local f = levels.FOODS[slot.food]
+      local d = grill.doneness(f, slot.t)
+      local frac = math.max(0, math.min(1, slot.t / f.burn))
+      local fw = SLOT_SIZE * frac
+      gui.set_size(sn.fill, vmath.vector3(math.max(fw, 2), 12, 0))
+      gui.set_position(sn.fill,
+        vmath.vector3(sn.x - SLOT_SIZE / 2 + fw / 2, BAR_Y, 0))
+      if d == "perfect" then gui.set_color(sn.fill, C.green)
+      elseif d == "good" then gui.set_color(sn.fill, C.gold)
+      elseif d == "over" then gui.set_color(sn.fill, C.orange)
+      elseif d == "burnt" then gui.set_color(sn.fill, C.grill)
+      else gui.set_color(sn.fill, C.raw) end
+      if slot.hot then
+        gui.set_color(sn.hot, C.orange)
+      else
+        gui.set_color(sn.hot, C.clear)
+      end
+      -- perfect window: gentle pulse so the moment reads
+      if d == "perfect" then
+        local s = 1 + 0.06 * math.sin(self.elapsed * 8)
+        gui.set_scale(sn.img, vmath.vector3(s, s, 1))
+      end
+    else
+      gui.set_color(sn.hot, C.clear)
+    end
+  end
+end
+
+-- ---------------------------------------------------------------- customers --
+
+local function cust_x(self, idx)
+  return W / 2 + (idx - 2.5) * 150
+end
+
+local function add_cust_node(self, cust)
+  local idx = #self.grill.customers
+  for i, c in ipairs(self.grill.customers) do
+    if c.id == cust.id then idx = i break end
+  end
+  local x = cust_x(self, idx)
+  local sprite = new_img(self, false, nil, "cust_" .. cust.color,
+    1250, CUST_Y, 84, 84)
+  local want = new_img(self, false, nil,
+    "food_" .. levels.FOODS[cust.want].id, 1250, CUST_Y + 66, 48, 48)
+  local bar_bg = new_box(self, false, nil, 1250, CUST_Y - 56, 64, 8,
+    vmath.vector4(0, 0, 0, 0.6))
+  local bar = new_box(self, false, nil, 1250, CUST_Y - 56, 64, 8, C.green)
+  local warn = new_text(self, false, nil, "!", 1250, CUST_Y + 20, 1.4, C.danger)
+  gui.set_color(warn, C.clear)
+  gui.animate(sprite, gui.PROP_POSITION, vmath.vector3(x, CUST_Y, 0),
+    gui.EASING_OUTBACK, 0.4)
+  gui.animate(want, gui.PROP_POSITION, vmath.vector3(x, CUST_Y + 66, 0),
+    gui.EASING_OUTBACK, 0.4)
+  gui.animate(bar_bg, gui.PROP_POSITION, vmath.vector3(x, CUST_Y - 56, 0),
+    gui.EASING_OUTBACK, 0.4)
+  gui.animate(bar, gui.PROP_POSITION, vmath.vector3(x, CUST_Y - 56, 0),
+    gui.EASING_OUTBACK, 0.4)
+  gui.animate(warn, gui.PROP_POSITION, vmath.vector3(x, CUST_Y + 20, 0),
+    gui.EASING_OUTBACK, 0.4)
+  self.cust_nodes[cust.id] = {
+    sprite = sprite, want = want, bar_bg = bar_bg, bar = bar,
+    warn = warn, cust = cust, gone = false,
+  }
+end
+
+local function remove_cust_node(self, id, happy)
+  local cn = self.cust_nodes[id]
+  if not cn or cn.gone then return end
+  cn.gone = true
+  self.cust_nodes[id] = nil
+  local tx = happy and gui.get_position(cn.sprite).x or 1080
+  local ty = happy and CUST_Y + 120 or CUST_Y
+  for _, n in ipairs({ cn.sprite, cn.want, cn.bar_bg, cn.bar, cn.warn }) do
+    local pos = gui.get_position(n)
+    gui.animate(n, gui.PROP_POSITION, vmath.vector3(tx, ty, 0),
+      gui.EASING_INOUT, 0.45)
+    gui.animate(n, gui.PROP_COLOR, vmath.vector4(1, 1, 1, 0),
+      gui.EASING_IN, 0.45, 0, function()
+        pcall(gui.delete_node, n)
+      end)
+  end
+  -- reflow the remaining customers into their slots
+  for _, other in pairs(self.cust_nodes) do
+    local idx = 1
+    for i, c in ipairs(self.grill.customers) do
+      if c.id == other.cust.id then idx = i break end
+    end
+    local nx = cust_x(self, idx)
+    for _, n in ipairs({ other.sprite, other.want, other.bar_bg,
+                         other.bar, other.warn }) do
+      local pos = gui.get_position(n)
+      gui.animate(n, gui.PROP_POSITION, vmath.vector3(nx, pos.y, 0),
+        gui.EASING_OUTBACK, 0.3)
+    end
+  end
+end
+
+local function sync_customers(self)
+  local g = self.grill
+  if not g then return end
+  local alive = {}
+  for _, c in ipairs(g.customers) do
+    alive[c.id] = true
+    if not self.cust_nodes[c.id] then add_cust_node(self, c) end
+  end
+  for id, cn in pairs(self.cust_nodes) do
+    if not alive[id] and not cn.gone then
+      remove_cust_node(self, id, false)
+    end
+  end
+  for id, cn in pairs(self.cust_nodes) do
+    if not cn.gone then
+      local c = cn.cust
+      local frac = math.max(0, c.patience / c.max)
+      gui.set_size(cn.bar, vmath.vector3(64 * frac, 8, 0))
+      local pos = gui.get_position(cn.bar_bg)
+      gui.set_position(cn.bar,
+        vmath.vector3(pos.x - 32 + 32 * frac, pos.y, 0))
+      if frac > 0.5 then gui.set_color(cn.bar, C.green)
+      elseif frac > 0.25 then gui.set_color(cn.bar, C.orange)
+      else gui.set_color(cn.bar, C.danger) end
+      if frac < 0.3 then gui.set_color(cn.warn, C.danger)
+      else gui.set_color(cn.warn, C.clear) end
+    end
+  end
+end
+
+-- ------------------------------------------------------------------ play --
+
+local function show_play(self, data)
+  self.screen = "play"
+  self.level = data.level or 1
+  self.endless = data.endless or false
+  self.def = data.def
+  self.mission = data.def.mission
+  self.time_left = data.def.time or 0
+  self.total_time = data.def.time or 0
+  self.score = 0
+  self.elapsed = 0
+  self.over = false
+  self.end_pending = nil
+  self.end_timer = 0
+  self.ai_timer = 1.0
+  self.paused = false
+  self.user_paused = false -- a fresh game clears any stale pause state (quit-to-title left it true; gd_resume would otherwise re-pause the game after the next ad)
+  self.seasoning = 0
+  self.season_total = 0
+  self.grill = grill.new(data.def, self.endless)
+  clear_all(self)
+  bg(self)
+  -- HUD (mission texts sit below the background's ONE PAN sign at the
+  -- top, which spans GUI y 585-632; score/timer are white on the dark
+  -- teal strip)
+  self.hud_score = new_text(self, false, nil, "Score  0", 100, 610, 1.0, C.white)
+  new_text(self, false, nil, self.mission.text, 568, 556, 0.95, C.ink, 420)
+  self.hud_mission = new_text(self, false, nil, "", 568, 530, 0.9, C.ink)
+  self.hud_timer = new_text(self, false, nil, fmt_time(self.time_left),
+    950, 610, 1.3, C.white)
+  self.hud_rival = new_text(self, false, nil, "RIVAL: 0", 950, 566, 0.8, C.ink)
+  button(self, false, nil, "II", 1096, 606, 52, 48, 1.1,
+    function() msg.post(GAME, "ui_pause", {}) end, C.btn2)
+  -- pan panel (left): condition bar + season button
+  new_text(self, false, nil, "PAN", PAN_X, 545, 1.0, C.ink)
+  new_box(self, false, nil, PAN_X, 420, 44, 200,
+    vmath.vector4(0, 0, 0, 0.6))
+  self.pan_fill = new_box(self, false, nil, PAN_X, 420, 44, 200, C.green)
+  self.season_btn, self.season_label = button(self, false, nil,
+    "SEASON PAN", PAN_X, 235, 150, 56, 1.0,
+    function() do_season(self) end, C.btn2)
+  new_box(self, false, nil, PAN_X, 200, 150, 10,
+    vmath.vector4(0, 0, 0, 0.6))
+  self.season_fill = new_box(self, false, nil, PAN_X, 200, 0, 10, C.gold)
+  button(self, false, nil, "MENU", 1010, 42, 150, 52, 1.1,
+    function() msg.post(GAME, "ui_quit", {}) end)
+  -- grill slots
+  build_slot_nodes(self)
+  update_hud(self)
+  -- mission banner
+  local bb = obox(self, nil, W / 2, 480, 600, 70, C.panel)
+  gui.set_scale(bb, vmath.vector3(0.9, 0.9, 1))
+  gui.animate(bb, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+    gui.EASING_OUTBACK, 0.25)
+  otext(self, bb, "MISSION: " .. self.mission.text, 0, 0, 1.2, C.ink, 560)
+  self.banner_timer = 1.6
+  self.banner_active = true
+end
+
+-- --------------------------------------------------------------- overlays --
+
+local function show_pause(self)
+  self.paused = true
+  clear_overlay(self)
+  local p = panel(self, 460, 460)
+  otext(self, p, "PAUSED", 0, 170, 2.0, C.ink)
+  button(self, true, p, "RESUME", 0, 80, 320, 72, 1.2,
+    function() msg.post(GAME, "ui_resume", {}) end)
+  button(self, true, p, "RESTART", 0, -10, 320, 72, 1.2,
+    function() msg.post(GAME, "ui_retry", {}) end, C.btn2)
+  button(self, true, p, "SOUND: " .. (self.muted and "OFF" or "ON"),
+    0, -100, 320, 72, 1.2,
+    function() msg.post(GAME, "ui_mute", {}) end, C.btn2)
+  button(self, true, p, "QUIT TO TITLE", 0, -180, 320, 64, 1.1,
+    function() msg.post(GAME, "ui_quit", {}) end)
+end
+
+local function show_win(self, data)
+  self.screen = "win"
+  clear_overlay(self)
+  confetti(self)
+  audio.play("sfx_mission")
+  local p = panel(self, 520, 600)
+  otext(self, p, "LEVEL COMPLETE!", 0, 220, 1.7, C.btn)
+  otext(self, p, "Mission complete!", 0, 172, 1.1, C.ink)
+  for s = 1, 3 do
+    local st = oimg(self, p, "star", (s - 2) * 90, 92, 72, 72)
+    gui.set_scale(st, vmath.vector3(0.2, 0.2, 1))
+    if s <= (data.stars or 1) then
+      gui.animate(st, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+        gui.EASING_OUTBACK, 0.35, 0.15 + s * 0.18)
+    else
+      gui.set_color(st, vmath.vector4(0.6, 0.6, 0.6, 0.7))
+      gui.animate(st, gui.PROP_SCALE, vmath.vector3(1, 1, 1),
+        gui.EASING_OUTBACK, 0.35, 0.15 + s * 0.18)
+    end
+  end
+  otext(self, p, "Score  " .. (data.score or 0), 0, 8, 1.3, C.ink)
+  local y = -82
+  if data.has_next then
+    button(self, true, p, "NEXT LEVEL", 0, y, 340, 76, 1.3,
+      function() msg.post(GAME, "ui_next", {}) end)
+    y = y - 85
+  end
+  button(self, true, p, "REPLAY", 0, y, 340, 72, 1.2,
+    function() msg.post(GAME, "ui_retry", {}) end, C.btn2)
+  button(self, true, p, "LEVELS", 0, y - 85, 340, 72, 1.2,
+    function() msg.post(GAME, "ui_levels", {}) end, C.btn2)
+end
+
+local function show_lose(self, data)
+  self.screen = "lose"
+  clear_overlay(self)
+  local p = panel(self, 520, 460)
+  otext(self, p, "TIME UP!", 0, 170, 1.9, C.danger)
+  if data.endless then
+    otext(self, p, "Three customers walked off!", 0, 115, 1.1, C.ink)
+    otext(self, p, "Score  " .. (data.score or 0), 0, 55, 1.3, C.ink)
+    otext(self, p, "Best  " .. (data.best or 0), 0, 5, 1.1, C.ink)
+  else
+    otext(self, p, data.reason or "Out of time - try again!", 0, 115, 1.1, C.ink)
+    otext(self, p, "Score  " .. (data.score or 0), 0, 55, 1.3, C.ink)
+  end
+  button(self, true, p, "TRY AGAIN", 0, -70, 340, 76, 1.3,
+    function() msg.post(GAME, "ui_retry", {}) end)
+  button(self, true, p, "LEVELS", 0, -160, 340, 72, 1.2,
+    function() msg.post(GAME, "ui_levels", {}) end, C.btn2)
+end
+
+local function show_howto(self)
+  clear_overlay(self)
+  local p = panel(self, 700, 520)
+  otext(self, p, "HOW TO PLAY", 0, 210, 1.8, C.ink)
+  otext(self, p,
+    "Food lands on the grill. Watch the bar under each piece.\n\n" ..
+    "Tap a piece when its bar is in the GREEN to serve it PERFECT " ..
+    "to the customer who ordered it. Early is underdone, late is " ..
+    "burnt - both get wasted.\n\n" ..
+    "Every dish wears the PAN out. A worn pan cooks faster and " ..
+    "grows HOT SPOTS that burn food twice as fast. Tap SEASON PAN " ..
+    "to fix it - but food keeps cooking while you season.\n\n" ..
+    "Customers who wait too long walk off to the RIVAL stall.\n\n" ..
+    "Keys: 1-6 serve a grill slot, S season the pan, P pause.",
+    0, -30, 1.05, C.ink, 620)
+  button(self, true, p, "GOT IT", 0, -210, 300, 64, 1.2,
+    function() clear_overlay(self) end)
+end
+
+-- ------------------------------------------------------------ game actions --
+
+local function stars_for(self)
+  local th = self.def.stars or { 0, 0, 0 }
+  if (th[3] or 0) > 0 and self.score >= th[3] then return 3 end
+  if (th[2] or 0) > 0 and self.score >= th[2] then return 2 end
+  return 1
+end
+
+local function check_end(self)
+  if self.over then return end
+  local m = self.mission
+  local g = self.grill
+  if self.endless then
+    if g.lost >= 3 then
+      self.over = true
+      self.end_pending = "lose"
+      self.end_reason = "Three customers walked off!"
+      self.end_timer = 0.9
+    end
+    return
+  end
+  local won = false
+  local lose_reason = nil
+  if m.type == "serve" then
+    won = g.served >= m.count
+  elseif m.type == "score" then
+    won = self.score >= m.target
+  elseif m.type == "perfect" then
+    won = g.perfect >= m.count
+    if g.lost > m.max_lost then lose_reason = "Too many customers lost!" end
+  end
+  if won then
+    self.over = true
+    self.end_pending = "win"
+    self.end_timer = 1.1
+    confetti(self)
+    audio.play("sfx_mission")
+    return
+  end
+  if lose_reason or self.time_left <= 0 then
+    self.over = true
+    self.end_pending = "lose"
+    self.end_reason = lose_reason or "Out of time - try again!"
+    self.end_timer = 0.9
+  end
+end
+
+serve_slot = function(self, i)
+  if self.screen ~= "play" or self.paused or self.over then return end
+  if self.seasoning and self.seasoning > 0 then
+    popup(self, W / 2, 340, "Seasoning the pan...", C.orange)
+    return
+  end
+  local g = self.grill
+  local slot = g.slots[i]
+  if not slot or not slot.food then return end
+  local x = slot_x(self, i)
+  -- the customer this would serve (grill.serve removes them)
+  local cust = nil
+  for _, c in ipairs(g.customers) do
+    if c.want == slot.food then cust = c break end
+  end
+  local result, pts = grill.serve(g, self.def, i)
+  if result == "empty" then return end
+  if result == "perfect" then
+    audio.play("sfx_perfect")
+    self.score = self.score + pts
+    popup(self, x, SLOT_Y + 70, "+" .. pts .. " PERFECT!", C.gold)
+    if g.streak >= 2 then
+      popup(self, x, SLOT_Y + 104, "STREAK x" .. g.streak, C.gold)
+      audio.play("sfx_combo")
+    end
+    burst(self, x, SLOT_Y, C.gold, 8)
+    if cust then remove_cust_node(self, cust.id, true) end
+  elseif result == "good" then
+    audio.play("sfx_serve")
+    self.score = self.score + pts
+    popup(self, x, SLOT_Y + 70, "+" .. pts, C.gold)
+    burst(self, x, SLOT_Y, C.white, 5)
+    if cust then remove_cust_node(self, cust.id, true) end
+  elseif result == "over" then
+    audio.play("sfx_serve")
+    self.score = self.score + pts
+    popup(self, x, SLOT_Y + 70, "+" .. pts .. " overdone", C.orange)
+    if cust then remove_cust_node(self, cust.id, true) end
+  elseif result == "under" then
+    audio.play("sfx_under")
+    popup(self, x, SLOT_Y + 70, "Underdone!", C.danger)
+  elseif result == "burnt" then
+    audio.play("sfx_burnt")
+    smoke(self, x, SLOT_Y)
+    popup(self, x, SLOT_Y + 70, "Burnt!", C.danger)
+  elseif result == "nobody" then
+    audio.play("sfx_under")
+    popup(self, x, SLOT_Y + 70, "No one wanted it!", C.orange)
+  end
+  update_hud(self)
+  check_end(self)
+end
+
+do_season = function(self)
+  if self.screen ~= "play" or self.paused or self.over then return end
+  if self.seasoning and self.seasoning > 0 then return end
+  if self.grill.pan >= 100 then
+    popup(self, W / 2, 340, "Pan is already perfect!", C.green)
+    return
+  end
+  self.seasoning = self.def.season
+  self.season_total = self.def.season
+  audio.play("sfx_season")
+  popup(self, PAN_X, 300, "Seasoning...", C.gold)
+end
+
+local function do_autoplay(self)
+  local g = self.grill
+  if self.seasoning and self.seasoning > 0 then return end
+  for i, slot in ipairs(g.slots) do
+    if slot.food then
+      local f = levels.FOODS[slot.food]
+      if grill.doneness(f, slot.t) == "perfect" then
+        serve_slot(self, i)
+        return
+      end
+    end
+  end
+  for i, slot in ipairs(g.slots) do
+    if slot.food then
+      local f = levels.FOODS[slot.food]
+      if grill.doneness(f, slot.t) == "burnt" then
+        serve_slot(self, i)
+        return
+      end
+    end
+  end
+  for i, slot in ipairs(g.slots) do
+    if slot.food then
+      local f = levels.FOODS[slot.food]
+      local d = grill.doneness(f, slot.t)
+      if (d == "good" or d == "over") and slot.t > f.burn - 1.5 then
+        serve_slot(self, i)
+        return
+      end
+    end
+  end
+  if g.pan < 35 then
+    local soon = false
+    for _, slot in ipairs(g.slots) do
+      if slot.food then
+        local f = levels.FOODS[slot.food]
+        if slot.t > f.perfect0 - 2 and slot.t < f.perfect1 then
+          soon = true
+        end
+      end
+    end
+    if not soon then do_season(self) end
+  end
+end
+
+-- ------------------------------------------------------------------ input --
+
+function on_input(self, action_id, action)
+  if action_id == hash("touch") then
+    if action.pressed then
+      for _, p in ipairs(self.pick) do
+        if gui.pick_node(p.node, action.x, action.y) then
+          p.cb()
+          return
+        end
+      end
+    end
+  elseif action_id == hash("pause_key") then
+    if action.pressed then
+      if self.user_paused then
+        msg.post(GAME, "ui_resume", {})
+      elseif self.screen == "play" then
+        msg.post(GAME, "ui_pause", {})
+      end
+    end
+  elseif action_id == hash("season_key") then
+    if action.pressed then do_season(self) end
+  elseif action_id == hash("autoplay") then
+    if action.pressed then
+      self.autoplay = not self.autoplay
+      print("autoplay", self.autoplay)
+    end
+  elseif action_id == hash("unlock_key") then
+    if action.pressed and self.screen == "title" then
+      msg.post(GAME, "ui_unlock_all", {})
+    end
+  else
+    for i = 1, 6 do
+      if action_id == hash("slot" .. i) then
+        if action.pressed then serve_slot(self, i) end
+        return
+      end
+    end
+  end
+end
+
+-- ----------------------------------------------------------------- update --
+
+local function report_state(self)
+  if html5 then
+    local g = self.grill
+    local foods, perfect_n, good_n, burnt_n = 0, 0, 0, 0
+    local serve, good, early, burnt = "0,0", "0,0", "0,0", "0,0"
+    if g then
+      foods, perfect_n, good_n, burnt_n = grill.counts(g)
+      for i, slot in ipairs(g.slots) do
+        if slot.food then
+          local f = levels.FOODS[slot.food]
+          local d = grill.doneness(f, slot.t)
+          local xy = math.floor(slot_x(self, i)) .. "," .. SLOT_Y
+          if d == "perfect" and serve == "0,0" then serve = xy end
+          if (d == "good" or d == "over") and good == "0,0" then good = xy end
+          if d == "under" and early == "0,0" then early = xy end
+          if d == "burnt" and burnt == "0,0" then burnt = xy end
+        end
+      end
+    end
+    pcall(html5.run, "document.title='ONEPAN|screen=" .. self.screen ..
+      "|score=" .. (self.score or 0) ..
+      "|served=" .. (g and g.served or 0) ..
+      "|perfect=" .. (g and g.perfect or 0) ..
+      "|lost=" .. (g and g.lost or 0) ..
+      "|time=" .. math.floor(self.time_left or 0) ..
+      "|pan=" .. math.floor(g and g.pan or 100) ..
+      "|foods=" .. foods ..
+      "|perfect_n=" .. perfect_n ..
+      "|good_n=" .. good_n ..
+      "|burnt_n=" .. burnt_n ..
+      "|serve=" .. serve ..
+      "|good=" .. good ..
+      "|early=" .. early ..
+      "|burnt=" .. burnt ..
+      "|level=" .. (self.level or 0) ..
+      "|endless=" .. (self.endless and 1 or 0) ..
+      "|auto=" .. (self.autoplay and 1 or 0) ..
+      "|paused=" .. (self.paused and 1 or 0) ..
+      "|streak=" .. (g and g.streak or 0) ..
+      "|season=" .. ((self.seasoning and self.seasoning > 0) and 1 or 0) ..
+      "|customers=" .. (g and #g.customers or 0) ..
+      "|rival=" .. (g and g.rival or 0) .. "'")
+  end
+end
+
+function update(self, dt)
+  self.report_t = (self.report_t or 0) + dt
+  if self.report_t > 0.5 then
+    self.report_t = 0
+    report_state(self)
+  end
+  if self.banner_active and self.banner_timer then
+    self.banner_timer = self.banner_timer - dt
+    if self.banner_timer <= 0 then
+      self.banner_active = false
+      self.banner_timer = nil
+      if self.screen == "play" and not self.paused then
+        clear_overlay(self)
+      end
+    end
+  end
+  if self.paused then return end
+  -- particles
+  for i = #self.particles, 1, -1 do
+    local p = self.particles[i]
+    p.life = p.life - dt
+    if p.life <= 0 then
+      pcall(gui.delete_node, p.node)
+      table.remove(self.particles, i)
+    else
+      local pos = gui.get_position(p.node)
+      if p.confetti then
+        p.vy = p.vy - 60 * dt
+        pos.x = pos.x + p.vx * dt + math.sin(p.life * 9) * 30 * dt
+      elseif p.smoke then
+        pos.x = pos.x + p.vx * dt
+      else
+        p.vy = p.vy - 900 * dt
+        pos.x = pos.x + p.vx * dt
+      end
+      pos.y = pos.y + p.vy * dt
+      gui.set_position(p.node, pos)
+      local c = gui.get_color(p.node)
+      c.w = math.max(0, math.min(1, p.life / 0.5))
+      gui.set_color(p.node, c)
+    end
+  end
+  -- score popups
+  for i = #self.popups, 1, -1 do
+    local p = self.popups[i]
+    p.life = p.life - dt
+    if p.life <= 0 then
+      pcall(gui.delete_node, p.node)
+      table.remove(self.popups, i)
+    else
+      local pos = gui.get_position(p.node)
+      pos.y = pos.y + 42 * dt
+      gui.set_position(p.node, pos)
+      local c = gui.get_color(p.node)
+      c.w = math.max(0, p.life / 0.9)
+      gui.set_color(p.node, c)
+    end
+  end
+  if self.screen ~= "play" then return end
+  -- countdown
+  if not self.over then
+    self.elapsed = self.elapsed + dt
+    if not self.endless then
+      self.time_left = self.time_left - dt
+      if self.time_left <= 0 then
+        self.time_left = 0
+        update_hud(self)
+        check_end(self)
+      elseif math.floor(self.time_left) ~= math.floor(self.time_left + dt) then
+        update_hud(self)
+      end
+    end
+  end
+  -- seasoning channel (food keeps cooking while you season)
+  if self.seasoning and self.seasoning > 0 and not self.over then
+    self.seasoning = self.seasoning - dt
+    if self.seasoning <= 0 then
+      self.seasoning = 0
+      self.grill.pan = 100
+      popup(self, PAN_X, 300, "Pan re-seasoned!", C.green)
+      audio.play("sfx_season")
+      update_hud(self)
+    end
+  end
+  -- grill tick in small sub-steps: headless frames are slow, and doneness
+  -- windows must not be skipped between frames.
+  if not self.over then
+    local remain = dt
+    while remain > 0 do
+      local step = math.min(remain, 0.25)
+      local events = grill.tick(self.grill, self.def, step)
+      for _, ev in ipairs(events) do
+        if ev.type == "left" then
+          popup(self, W / 2, 340, "A customer walked off!", C.danger)
+          audio.play("sfx_under")
+        elseif ev.type == "burnt_cleared" then
+          smoke(self, slot_x(self, ev.slot), SLOT_Y)
+        end
+      end
+      remain = remain - step
+    end
+    sync_slots(self)
+    sync_customers(self)
+    update_hud(self)
+    check_end(self)
+  end
+  -- win/lose delay, then hand over to the controller
+  if self.end_pending then
+    self.end_timer = self.end_timer - dt
+    if self.end_timer <= 0 then
+      local pending = self.end_pending
+      local reason = self.end_reason
+      self.end_pending = nil
+      self.end_reason = nil
+      if pending == "win" then
+        msg.post(GAME, "ui_level_won",
+          { score = self.score, stars = stars_for(self) })
+      else
+        msg.post(GAME, "ui_level_lost",
+          { score = self.score, reason = reason })
+      end
+    end
+  end
+  -- autoplay (verification aid): serve perfect foods, trash burnt ones,
+  -- season a worn pan when nothing is about to be perfect.
+  if self.autoplay and not self.over and self.screen == "play" then
+    self.ai_timer = (self.ai_timer or 0) - dt
+    if self.ai_timer <= 0 then
+      self.ai_timer = 0.9
+      do_autoplay(self)
+    end
+  end
+end
+
+-- --------------------------------------------------------------- messages --
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("show_title") then
+    self.muted = message.muted or false
+    self.endless_best = message.endless_best or 0
+    show_title(self, message)
+  elseif message_id == hash("show_levels") then
+    self.muted = message.muted or false
+    show_levels(self, message)
+  elseif message_id == hash("show_play") then
+    self.muted = message.muted or false
+    show_play(self, message)
+  elseif message_id == hash("show_win") then
+    show_win(self, message)
+  elseif message_id == hash("show_lose") then
+    show_lose(self, message)
+  elseif message_id == hash("show_howto") then
+    show_howto(self)
+  elseif message_id == hash("show_pause") then
+    self.user_paused = true
+    self.banner_active = false
+    show_pause(self)
+  elseif message_id == hash("hide_pause") then
+    self.user_paused = false
+    self.paused = false
+    clear_overlay(self)
+  elseif message_id == hash("gd_pause") then
+    self.paused = true
+  elseif message_id == hash("gd_resume") then
+    self.paused = self.user_paused or false
+  elseif message_id == hash("set_mute") then
+    self.muted = message.muted
+    if self.mute_label then
+      gui.set_text(self.mute_label,
+        self.muted and "SOUND OFF" or "SOUND ON")
+    end
+  end
+end
+
+-- -------------------------------------------------------------------- init --
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+  self.nodes = {}
+  self.onodes = {}
+  self.pick = {}
+  self.slot_nodes = {}
+  self.cust_nodes = {}
+  self.particles = {}
+  self.popups = {}
+  self.leaving = {}
+  self.screen = "title"
+  self.muted = false
+  self.autoplay = false
+  self.paused = false
+  self.user_paused = false
+  self.over = false
+  self.score = 0
+  self.time_left = 0
+  self.report_t = 0
+  self.ai_timer = 1.0
+  self.elapsed = 0
+  self.seasoning = 0
+  self.season_total = 0
+  self.grill = nil
+end
